@@ -12,38 +12,50 @@ const ElevatorState = Object.freeze({
 });
 
 class LiftRequest {
-  constructor(floor, direction) {
+  constructor(floor, direction, peopleCount = 1) {
     this.floor = floor;
     this.direction = direction;
+    this.peopleCount = peopleCount;
   }
 }
 
 class ElevatorCar {
-  constructor(id) {
+  constructor(id, capacity = 10) {
     this.id = id;
     this.currentFloor = 0;
     this.direction = Direction.IDLE;
     this.state = ElevatorState.IDLE;
     this.upRequests = [];
     this.downRequests = [];
+    this.currentLoad = 0;
+    this.pendingLoad = 0;
+    this.capacity = capacity;
   }
 
   addRequest(request) {
-    if (request.floor >= this.currentFloor) {
-      this.upRequests.push(request.floor);
-      this.upRequests.sort((a, b) => a - b);
-    } else {
-      this.downRequests.push(request.floor);
-      this.downRequests.sort((a, b) => b - a);
+    if (this.pendingLoad + request.peopleCount > this.capacity) {
+      console.log(`Elevator ${this.id} rejected request due to capacity`);
+      return false;
     }
+    this.pendingLoad += request.peopleCount;
+    if (request.floor >= this.currentFloor) {
+      this.upRequests.push(request);
+      this.upRequests.sort((a, b) => a.floor - b.floor);
+    } else {
+      this.downRequests.push(request);
+      this.downRequests.sort((a, b) => b.floor - a.floor);
+    }
+    return true;
   }
 
   step() {
     if ([Direction.UP, Direction.IDLE].includes(this.direction)) {
       if (this.upRequests.length > 0) {
         this.direction = Direction.UP;
-        const nextFloor = this.upRequests.shift();
-        this.moveTo(nextFloor);
+        const nextReq = this.upRequests.shift();
+        this.pendingLoad -= nextReq.peopleCount;
+        this.currentLoad += nextReq.peopleCount;
+        this.moveTo(nextReq.floor, nextReq.peopleCount);
         return;
       }
       if (this.downRequests.length > 0) {
@@ -52,8 +64,10 @@ class ElevatorCar {
       }
     } else {
       if (this.downRequests.length > 0) {
-        const nextFloor = this.downRequests.shift();
-        this.moveTo(nextFloor);
+        const nextReq = this.downRequests.shift();
+        this.pendingLoad -= nextReq.peopleCount;
+        this.currentLoad += nextReq.peopleCount;
+        this.moveTo(nextReq.floor, nextReq.peopleCount);
         return;
       }
       if (this.upRequests.length > 0)
@@ -62,15 +76,16 @@ class ElevatorCar {
     this.direction = Direction.IDLE;
   }
 
-  moveTo(floor) {
+  moveTo(floor, peopleCount) {
     this.state = ElevatorState.MOVING;
     console.log(`Elevator ${this.id} moving from ${this.currentFloor} → ${floor}`);
     this.currentFloor = floor;
-    this.openDoor();
+    this.openDoor(peopleCount);
   }
 
-  openDoor() {
+  openDoor(peopleCount) {
     this.state = ElevatorState.STOPPED;
+    this.currentLoad -= peopleCount;
     console.log(`Elevator ${this.id} door opened at floor ${this.currentFloor}`);
   }
 }
@@ -96,10 +111,10 @@ class MovingTowardsStrategy extends DispatchStrategy {
 
 class IdleElevatorStrategy extends DispatchStrategy {
   selectElevator(requestFloor, direction, elevators) {
-    elevators.forEach(elevator => {
+    for (const elevator of elevators) {
       if (elevator.state === ElevatorState.IDLE)
         return elevator;
-    });
+    }
     return null;
   }
 }
@@ -128,7 +143,7 @@ class Dispatcher {
     ];
   }
 
-  submitExternalRequest(floor, direction) {
+  submitExternalRequest(floor, direction, peopleCount) {
     let chosenElevator = null;
     for (const strategy of this.strategies) {
       chosenElevator = strategy.selectElevator(floor, direction, this.elevators);
@@ -137,7 +152,9 @@ class Dispatcher {
     }
     if (chosenElevator) {
       console.log(`Dispatcher assigned Elevator ${chosenElevator.id}`);
-      chosenElevator.addRequest(new LiftRequest(floor, direction));
+      const accepted = chosenElevator.addRequest(new LiftRequest(floor, direction, peopleCount));
+      if (!accepted)
+        console.log("Dispatcher could not assign request due to capacity");
     }
   }
 }
@@ -151,8 +168,8 @@ class ElevatorSystem {
     this.dispatcher = new Dispatcher(this.elevators);
   }
 
-  requestElevator(floor, direction) {
-    this.dispatcher.submitExternalRequest(floor, direction);
+  requestElevator(floor, direction, peopleCount) {
+    this.dispatcher.submitExternalRequest(floor, direction, peopleCount);
   }
 
   step() {
@@ -163,8 +180,12 @@ class ElevatorSystem {
 
 const system = new ElevatorSystem(2);
 
-system.requestElevator(5, Direction.UP);
-system.requestElevator(2, Direction.DOWN);
+system.elevators[0].capacity = 5;
+
+system.requestElevator(5, Direction.UP, 3); // accepted
+system.requestElevator(6, Direction.UP, 3); // should be rejected (3+3 > 5)
+
+system.requestElevator(2, Direction.DOWN, 2); // accepted
 
 system.step();
 system.step();
